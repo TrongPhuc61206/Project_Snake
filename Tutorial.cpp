@@ -7,15 +7,8 @@
 #include <algorithm> // Cho std::max
 
 
-void ShowTutorial()
+void ShowTutorial(sf::RenderWindow& window)
 {
-    // Tạo cửa sổ hướng dẫn với kích thước 1550x1050
-    sf::RenderWindow window(
-        sf::VideoMode(1550, 1050),
-        "Tutorial / How To Play",
-        sf::Style::Titlebar | sf::Style::Close
-    );
-    window.setFramerateLimit(60);
 
     // Tải nền hướng dẫn
     sf::Texture bgTexture;
@@ -50,20 +43,24 @@ void ShowTutorial()
         bgSprite.setPosition(offsetX, offsetY);
     }
 
-    // Vòng lặp chính của cửa sổ Tutorial
-    while (window.isOpen())
+    // Vòng lặp Tutorial - chạy cho đến khi người dùng thoát
+    bool exitTutorial = false;
+    while (window.isOpen() && !exitTutorial)
     {
         sf::Event event;
         while (window.pollEvent(event))
         {
-            // Xử lý đóng bằng nút X hoặc nhấn ESC
+            // Xử lý đóng bằng nút X
             if (event.type == sf::Event::Closed) {
                 window.close();
+                return;
             }
+            
+            // Nhấn ESC để quay về menu
             if (event.type == sf::Event::KeyPressed &&
                 event.key.code == sf::Keyboard::Escape)
             {
-                window.close();
+                exitTutorial = true;
             }
 
             // --- Xử lý Click Chuột vào vùng nút BACK ---
@@ -87,7 +84,7 @@ void ShowTutorial()
                     // Kiểm tra click
                     if (backButtonRect.contains(mouseClickPos))
                     {
-                        window.close(); // Đóng cửa sổ hướng dẫn
+                        exitTutorial = true;
                     }
                 }
             }

@@ -5,6 +5,10 @@
 #include <windows.h>
 #include <conio.h>
 #include <thread>
+#include <mutex>
+#include <queue>
+#include <atomic>
+#include <map>
 #include <iostream>
 #include <vector>
 #include <ctime>
@@ -28,6 +32,38 @@
 #pragma comment(lib, "winmm.lib")
 
 using namespace std;
+using namespace sf;
+
+// ===== HELPER FUNCTIONS FOR DYNAMIC SNAKE COLOR =====
+Color getSnakeBodyColorMain() {
+    switch (setting_snakeColor) {
+    case 0: return Color::Green;           // Xanh lá
+    case 1: return Color(186, 85, 211);    // Tím (Medium Orchid)
+    case 2: return Color::Red;             // Đỏ
+    case 3: return Color::Yellow;          // Vàng
+    default: return Color::Green;
+    }
+}
+
+Color getSnakeHeadColorMain() {
+    switch (setting_snakeColor) {
+    case 0: return Color(144, 238, 144);   // Xanh nhạt
+    case 1: return Color(221, 160, 221);   // Tím nhạt
+    case 2: return Color(255, 99, 71);     // Đỏ nhạt
+    case 3: return Color(255, 255, 153);   // Vàng nhạt
+    default: return Color(144, 238, 144);
+    }
+}
+
+Color getSnakeDarkBodyColorMain() {
+    switch (setting_snakeColor) {
+    case 0: return Color(0, 150, 0);       // Xanh đậm
+    case 1: return Color(147, 51, 170);    // Tím đậm
+    case 2: return Color(178, 34, 34);     // Đỏ đậm
+    case 3: return Color(204, 204, 0);     // Vàng đậm
+    default: return Color(0, 150, 0);
+    }
+}
 
 // ===== CONSTANTS & ENUMS =====
 const int MAX_SPEED = 8;
@@ -46,6 +82,27 @@ const int MODE_SURVIVAL = 1;
 const int MODE_TIMEATTACK = 2;
 
 // ===== STRUCTS & CLASSES =====
+struct GameResources {
+    Texture appleTexture;
+    Texture contextTexture;
+    Texture frameTexture;
+    Texture scoreTexture;
+    Texture pauseTexture;
+    bool loaded = false;
+    
+    bool loadAll() {
+        if (loaded) return true;
+        bool success = true;
+        success &= appleTexture.loadFromFile("images/Apple.png");
+        success &= contextTexture.loadFromFile("images/Context.png");
+        success &= frameTexture.loadFromFile("images/Mau.png");
+        success &= scoreTexture.loadFromFile("images/Score.png");
+        success &= pauseTexture.loadFromFile("images/Pause.png");
+        loaded = success;
+        return success;
+    }
+};
+
 struct GameObject {
     POINT position;
     char symbol;
@@ -110,6 +167,113 @@ bool gateActive = false;
 bool foodVisible = true;
 int foodIndex = 0;
 
+// ===== THREAD & ASYNC GLOBALS =====
+mutex soundMutex;
+mutex saveMutex;
+queue<string> soundQueue;
+bool shouldExit = false;
+atomic<bool> needsAutoSave(false);
+string currentPlayerName = "";
+vector<RectangleShape> lastSafeSnake;
+Vector2f lastSafeApplePos;
+int lastSafeScore = 0;
+
+// Raw Input globals
+map<int, bool> rawKeyStates;
+WNDPROC originalWndProc = nullptr;
+
+// ===== THREAD WORKERS =====
+void SoundWorker() {
+    while (!shouldExit) {
+        this_thread::sleep_for(chrono::milliseconds(100));
+        lock_guard<mutex> lock(soundMutex);
+        while (!soundQueue.empty()) {
+            string soundFile = soundQueue.front();
+            soundQueue.pop();
+            // Play sound nếu cần
+        }
+    }
+}
+
+void AutoSaveWorker() {
+    while (!shouldExit) {
+        this_thread::sleep_for(chrono::seconds(10));
+        if (needsAutoSave.load() && !currentPlayerName.empty()) {
+            lock_guard<mutex> lock(saveMutex);
+            // Auto save logic sẽ được gọi từ game loop
+            needsAutoSave.store(false);
+        }
+    }
+}
+
+// Raw Input Window Procedure
+LRESULT CALLBACK RawInputProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_INPUT) {
+        UINT size = 0;
+        GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+        vector<BYTE> buffer(size);
+        if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER)) == size) {
+            RAWINPUT* raw = (RAWINPUT*)buffer.data();
+            if (raw->header.dwType == RIM_TYPEKEYBOARD) {
+                int vkey = raw->data.keyboard.VKey;
+                bool isDown = !(raw->data.keyboard.Flags & RI_KEY_BREAK);
+                rawKeyStates[vkey] = isDown;
+            }
+        }
+    }
+    
+    // GỌI LẠI window procedure GỐC của SFML để không làm hỏng SFML
+    if (originalWndProc) {
+        return CallWindowProc(originalWndProc, hwnd, msg, wParam, lParam);
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// Đăng ký Raw Input cho keyboard
+void RegisterRawInput(HWND hwnd) {
+    RAWINPUTDEVICE rid;
+    rid.usUsagePage = 0x01;  // Generic Desktop
+    rid.usUsage = 0x06;      // Keyboard
+    // RIDEV_NOLEGACY: Chặn WM_KEYDOWN, WM_KEYUP, WM_CHAR -> bypass Unikey hoàn toàn
+    rid.dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;
+    rid.hwndTarget = hwnd;
+    
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+        cout << "Failed to register raw input device!\n";
+    } else {
+        cout << "Raw Input registered with NOLEGACY flag\n";
+    }
+    
+    // Lưu window procedure gốc của SFML và set procedure mới
+    originalWndProc = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_WNDPROC);
+    SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)RawInputProc);
+}
+
+// Hủy đăng ký Raw Input
+void UnregisterRawInput(HWND hwnd) {
+    RAWINPUTDEVICE rid;
+    rid.usUsagePage = 0x01;  // Generic Desktop
+    rid.usUsage = 0x06;      // Keyboard
+    rid.dwFlags = RIDEV_REMOVE;  // Gỡ bỏ device
+    rid.hwndTarget = nullptr;
+    
+    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    
+    // Khôi phục window procedure gốc
+    if (originalWndProc) {
+        SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)originalWndProc);
+        originalWndProc = nullptr;
+    }
+    
+    // Clear key states
+    rawKeyStates.clear();
+}
+
+// Check phím từ Raw Input
+bool IsRawKeyPressed(int vkey) {
+    return rawKeyStates.count(vkey) && rawKeyStates[vkey];
+}
+
 // ===== FORWARD DECLARATIONS =====
 void InitializeLevelMaps();
 MapData& GetCurrentMap();
@@ -119,7 +283,7 @@ void DrawMapObstacles();
 void ResetData();
 void GameLoop();
 bool Opposite(int dir1, int dir2);
-void ShowHighScores();
+void ShowHighScores(RenderWindow& window);
 
 // ===== SAFE TILE ACCESS HELPERS =====
 bool IsValidTilePos(const MapData& map, int x, int y);
@@ -1059,7 +1223,7 @@ void resetGame(vector<RectangleShape>& snake, Vector2f& direction, Vector2f& las
         segment.setPosition(posX_frame + (2 - i) * blockSize, posY_frame + 5 * blockSize);
         snake.push_back(segment);
     }
-    snake[0].setFillColor(Color::Green);
+    snake[0].setFillColor(getSnakeBodyColorMain());
     spawnApple(appleSprite, snake, frameWidth, frameHeight, posX_frame, posY_frame, blockSize);
 }
 
@@ -1195,32 +1359,132 @@ void showMessage(RenderWindow& window, const string& message) {
 }
 
 // Lưu trạng thái game vào file với tên người chơi
-void saveGameState(const string& playerName, const vector<RectangleShape>& snake, const Vector2f& direction, const Vector2f& applePos, float blockSize) {
-    string filename = "save_" + playerName + ".txt";
-    ofstream file(filename);
-    if (!file.is_open()) return;
-
-    // Lưu thông tin cơ bản
-    file << blockSize << "\n";
-    file << direction.x << " " << direction.y << "\n";
-    file << applePos.x << " " << applePos.y << "\n";
-
-    // Lưu độ dài rắn
-    file << snake.size() << "\n";
-
-    // Lưu vị trí từng đốt rắn
-    for (const auto& segment : snake) {
-        file << segment.getPosition().x << " " << segment.getPosition().y << "\n";
+void saveGameState(const string& playerName, const vector<RectangleShape>& snake, const Vector2f& direction, const Vector2f& applePos, float blockSize, int score = 0) {
+    const string SAVE_FILE = "savegames.txt";
+    
+    // Đọc toàn bộ file hiện có
+    map<string, vector<string>> allSaves;
+    ifstream readFile(SAVE_FILE);
+    if (readFile.is_open()) {
+        string line;
+        string currentPlayer;
+        vector<string> currentData;
+        
+        while (getline(readFile, line)) {
+            if (line.find("PLAYER:") == 0) {
+                if (!currentPlayer.empty()) {
+                    allSaves[currentPlayer] = currentData;
+                }
+                currentPlayer = line.substr(7); // Bỏ "PLAYER:"
+                currentData.clear();
+            } else {
+                currentData.push_back(line);
+            }
+        }
+        if (!currentPlayer.empty()) {
+            allSaves[currentPlayer] = currentData;
+        }
+        readFile.close();
     }
+    
+    // Cập nhật hoặc thêm mới data cho player
+    vector<string> newData;
+    newData.push_back(to_string(blockSize));
+    newData.push_back(to_string(direction.x) + " " + to_string(direction.y));
+    newData.push_back(to_string(applePos.x) + " " + to_string(applePos.y));
+    newData.push_back(to_string(score));
+    newData.push_back(to_string(snake.size()));
+    for (const auto& segment : snake) {
+        newData.push_back(to_string(segment.getPosition().x) + " " + to_string(segment.getPosition().y));
+    }
+    allSaves[playerName] = newData;
+    
+    // Ghi lại toàn bộ file
+    ofstream writeFile(SAVE_FILE);
+    if (writeFile.is_open()) {
+        for (const auto& pair : allSaves) {
+            writeFile << "PLAYER:" << pair.first << "\n";
+            for (const auto& line : pair.second) {
+                writeFile << line << "\n";
+            }
+        }
+        writeFile.close();
+    }
+    
+    // Cập nhật rank nếu không phải save tạm
+    if (playerName != "__TEMP_SAVE__" && score > 0) {
+        // Dùng độ dài rắn làm level (phản ánh tiến trình thực tế)
+        int level = static_cast<int>(snake.size());
+        SaveHighScoreEntry(playerName, score, level);
+        cout << "Rank updated for " << playerName << ": " << score << " pts (Snake Length: " << level << ")\n";
+    }
+}
 
-    file.close();
+// Xóa save game của player
+void deleteSaveState(const string& playerName) {
+    const string SAVE_FILE = "savegames.txt";
+    
+    // Đọc toàn bộ file hiện có
+    map<string, vector<string>> allSaves;
+    ifstream readFile(SAVE_FILE);
+    if (readFile.is_open()) {
+        string line;
+        string currentPlayer;
+        vector<string> currentData;
+        
+        while (getline(readFile, line)) {
+            if (line.find("PLAYER:") == 0) {
+                if (!currentPlayer.empty()) {
+                    allSaves[currentPlayer] = currentData;
+                }
+                currentPlayer = line.substr(7); // Bỏ "PLAYER:"
+                currentData.clear();
+            } else {
+                currentData.push_back(line);
+            }
+        }
+        if (!currentPlayer.empty()) {
+            allSaves[currentPlayer] = currentData;
+        }
+        readFile.close();
+    }
+    
+    // Xóa player khỏi map
+    allSaves.erase(playerName);
+    
+    // Ghi lại file (không có player đã xóa)
+    ofstream writeFile(SAVE_FILE);
+    if (writeFile.is_open()) {
+        for (const auto& pair : allSaves) {
+            writeFile << "PLAYER:" << pair.first << "\n";
+            for (const auto& line : pair.second) {
+                writeFile << line << "\n";
+            }
+        }
+        writeFile.close();
+    }
 }
 
 // Load trạng thái game từ file với tên người chơi
-bool loadGameState(const string& playerName, vector<RectangleShape>& snake, Vector2f& direction, Vector2f& lastDirection, Sprite& appleSprite, float blockSize) {
-    string filename = "save_" + playerName + ".txt";
-    ifstream file(filename);
+bool loadGameState(const string& playerName, vector<RectangleShape>& snake, Vector2f& direction, Vector2f& lastDirection, Sprite& appleSprite, float blockSize, int& score) {
+    const string SAVE_FILE = "savegames.txt";
+    ifstream file(SAVE_FILE);
     if (!file.is_open()) return false;
+
+    string line;
+    bool foundPlayer = false;
+    
+    while (getline(file, line)) {
+        if (line == "PLAYER:" + playerName) {
+            foundPlayer = true;
+            break;
+        }
+    }
+    
+    if (!foundPlayer) {
+        file.close();
+        return false;
+    }
 
     float savedBlockSize;
     Vector2f applePos;
@@ -1230,6 +1494,7 @@ bool loadGameState(const string& playerName, vector<RectangleShape>& snake, Vect
     file >> savedBlockSize;
     file >> direction.x >> direction.y;
     file >> applePos.x >> applePos.y;
+    file >> score;
     file >> snakeSize;
 
     lastDirection = direction;
@@ -1243,7 +1508,7 @@ bool loadGameState(const string& playerName, vector<RectangleShape>& snake, Vect
 
         RectangleShape segment;
         segment.setSize(Vector2f(blockSize, blockSize));
-        segment.setFillColor(i == 0 ? Color::Green : Color(0, 150, 0));
+        segment.setFillColor(i == 0 ? getSnakeBodyColorMain() : getSnakeDarkBodyColorMain());
         segment.setOutlineColor(Color::Black);
         segment.setOutlineThickness(1.f);
         segment.setPosition(x, y);
@@ -1254,7 +1519,7 @@ bool loadGameState(const string& playerName, vector<RectangleShape>& snake, Vect
     return snakeSize > 0;
 }
 
-void startGame(RenderWindow& window, bool resumeMode = false, const string& playerName = "") {
+void startGame(RenderWindow& window, GameResources& resources, bool resumeMode = false, const string& playerName = "") {
     const float blockSize = 25.f;
     const float frameWidth = 950.f;
     const float frameHeight = 550.f;
@@ -1263,33 +1528,91 @@ void startGame(RenderWindow& window, bool resumeMode = false, const string& play
     const int gridWidth = static_cast<int>(floor(frameWidth / blockSize));
     const int gridHeight = static_cast<int>(floor(frameHeight / blockSize));
 
+    // Chuỗi ID cho con rắn
+    const string snakeID = "2412749524127493241274982412724624127431";
+    int idIndex = 3; // Bắt đầu với 3 ký tự (vì có 3 đốt ban đầu)
+
     vector<RectangleShape> snake;
-    Texture appleTexture, contextTexture, frameTexture;
     Sprite appleSprite, spriteContext, frameSprite;
     Vector2f direction(blockSize, 0.f), lastDirection = direction;
+    int score = 0;
+    
+    // Load font cho số trên rắn
+    Font font;
+    bool fontLoaded = false;
+    
+    // Thử nhiều font đẹp (ưu tiên font game/số đẹp)
+    if (font.loadFromFile("C:\\Windows\\Fonts\\impact.ttf")) {
+        fontLoaded = true;
+        cout << "Font loaded: impact.ttf\n";
+    }
+    else if (font.loadFromFile("C:\\Windows\\Fonts\\arialbd.ttf")) {
+        fontLoaded = true;
+        cout << "Font loaded: arialbd.ttf (Arial Bold)\n";
+    }
+    else if (font.loadFromFile("C:\\Windows\\Fonts\\comic.ttf")) {
+        fontLoaded = true;
+        cout << "Font loaded: comic.ttf\n";
+    }
+    else if (font.loadFromFile("C:\\Windows\\Fonts\\arial.ttf")) {
+        fontLoaded = true;
+        cout << "Font loaded: arial.ttf\n";
+    }
+    else if (font.loadFromFile("fonts/arial.ttf")) {
+        fontLoaded = true;
+        cout << "Font loaded: fonts/arial.ttf\n";
+    }
+    else {
+        cout << "ERROR: Cannot load any font!\n";
+    }
 
-    if (!contextTexture.loadFromFile("images/Context.png")) return;
-    spriteContext.setTexture(contextTexture);
+    // Dùng texture đã load sẵn
+    spriteContext.setTexture(resources.contextTexture);
     spriteContext.setScale(
-        static_cast<float>(window.getSize().x) / contextTexture.getSize().x,
-        static_cast<float>(window.getSize().y) / contextTexture.getSize().y
+        static_cast<float>(window.getSize().x) / resources.contextTexture.getSize().x,
+        static_cast<float>(window.getSize().y) / resources.contextTexture.getSize().y
     );
 
-    if (!frameTexture.loadFromFile("images/Mau.png")) return;
-    frameSprite.setTexture(frameTexture);
-    frameSprite.setScale(frameWidth / frameTexture.getSize().x, frameHeight / frameTexture.getSize().y);
+    frameSprite.setTexture(resources.frameTexture);
+    frameSprite.setScale(frameWidth / resources.frameTexture.getSize().x, frameHeight / resources.frameTexture.getSize().y);
     frameSprite.setPosition(posX_frame, posY_frame);
 
-    if (!appleTexture.loadFromFile("images/Apple.png")) return;
-    appleSprite.setTexture(appleTexture);
-    float scaleApple = blockSize / appleTexture.getSize().x;
+    appleSprite.setTexture(resources.appleTexture);
+    float scaleApple = blockSize / resources.appleTexture.getSize().x;
     appleSprite.setScale(scaleApple, scaleApple);
 
+    // Score icon sprite (góc trên bên trái)
+    Sprite scoreIconSprite(resources.scoreTexture);
+    float scoreIconScale = 120.0f / resources.scoreTexture.getSize().y; // Height = 120px (gấp 1.5)
+    scoreIconSprite.setScale(scoreIconScale, scoreIconScale);
+    scoreIconSprite.setPosition(20.f, 10.f);
+    
+    // Pause button sprite (góc phải trên - có thể click)
+    Sprite pauseButtonSprite(resources.pauseTexture);
+    float pauseButtonScale = 130.0f / resources.pauseTexture.getSize().y; // Tăng từ 60 lên 80
+    pauseButtonSprite.setScale(pauseButtonScale, pauseButtonScale);
+    float pauseButtonWidth = resources.pauseTexture.getSize().x * pauseButtonScale;
+    pauseButtonSprite.setPosition(window.getSize().x - pauseButtonWidth + 50.f, 1.f); // +10 để dịch sang phải
+    
+    // Pause icon lớn (hiển thị giữa màn hình khi pause)
+    Sprite pauseIconSprite(resources.pauseTexture);
+    float pauseIconScale = 80.0f / resources.pauseTexture.getSize().y;
+    pauseIconSprite.setScale(pauseIconScale, pauseIconScale);
+    pauseIconSprite.setPosition(
+        (window.getSize().x - resources.pauseTexture.getSize().x * pauseIconScale) / 2.f,
+        (window.getSize().y - resources.pauseTexture.getSize().y * pauseIconScale) / 2.f - 100.f
+    );
+
     // Nếu là resume mode thì load game, không thì reset game mới
+    bool actuallyResumed = false;
     if (resumeMode && !playerName.empty()) {
-        bool loaded = loadGameState(playerName, snake, direction, lastDirection, appleSprite, blockSize);
-        if (!loaded) {
+        bool loaded = loadGameState(playerName, snake, direction, lastDirection, appleSprite, blockSize, score);
+        if (loaded) {
+            actuallyResumed = true;
+            cout << "Successfully loaded save for: " << playerName << "\n";
+        } else {
             // Nếu không load được thì reset game mới
+            cout << "Failed to load save, starting new game\n";
             resetGame(snake, direction, lastDirection, appleSprite, frameWidth, frameHeight, posX_frame, posY_frame, blockSize);
         }
     }
@@ -1297,31 +1620,129 @@ void startGame(RenderWindow& window, bool resumeMode = false, const string& play
         resetGame(snake, direction, lastDirection, appleSprite, frameWidth, frameHeight, posX_frame, posY_frame, blockSize);
     }
 
+    // Đăng ký Raw Input để bypass Unikey
+    HWND hwnd = window.getSystemHandle();
+    RegisterRawInput(hwnd);
+    cout << "Raw Input registered for Unikey bypass\n";
+    
+    // Đảm bảo window có focus để nhận input
+    window.requestFocus();
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+
     Clock clock;
-    Time timePerMove = milliseconds(150), timeSinceLastMove = Time::Zero;
+    
+    // Áp dụng độ khó từ Settings
+    // setting_difficulty: 0 = EASY (chậm), 1 = NORMAL (bth), 2 = HARD (nhanh)
+    int moveSpeed;
+    if (setting_difficulty == 0) {
+        moveSpeed = 150; // EASY: chậm
+    } else if (setting_difficulty == 1) {
+        moveSpeed = 100; // NORMAL: bình thường
+    } else { // setting_difficulty == 2
+        moveSpeed = 60;  // HARD: nhanh
+    }
+    
+    Time timePerMove = milliseconds(moveSpeed), timeSinceLastMove = Time::Zero;
+    Time autoSaveInterval = seconds(5), timeSinceAutoSave = Time::Zero;
+    // Chỉ dùng tên thật nếu THỰC SỰ load thành công
+    string tempSaveName = actuallyResumed ? playerName : "__TEMP_SAVE__";
+    bool isPaused = actuallyResumed; // Chỉ pause nếu thực sự load được save
+
+    cout << "=== ENTERING GAME LOOP ===\n";
+    cout << "Snake initial size: " << snake.size() << endl;
+    cout << "Font loaded: " << (fontLoaded ? "YES" : "NO") << endl;
+    cout << "Auto-save name: " << tempSaveName << endl;
+    if (isPaused) cout << "Game PAUSED - Press WASD to start\n";
 
     while (window.isOpen()) {
         Time dt = clock.restart();
         timeSinceLastMove += dt;
+        timeSinceAutoSave += dt;
+        
+        // Auto-save mỗi 5 giây
+        if (timeSinceAutoSave >= autoSaveInterval) {
+            timeSinceAutoSave = Time::Zero;
+            saveGameState(tempSaveName, snake, direction, appleSprite.getPosition(), blockSize, score);
+            cout << "Auto-saved to: " << tempSaveName << endl;
+        }
+        
         Event event;
         while (window.pollEvent(event)) {
             if (event.type == Event::Closed) window.close();
-            if (event.type == Event::KeyPressed && event.key.code == Keyboard::Escape) {
-                // Lưu game trước khi thoát (chỉ lưu nếu có tên người chơi)
-                if (!playerName.empty()) {
-                    saveGameState(playerName, snake, direction, appleSprite.getPosition(), blockSize);
+            
+            // Xử lý click pause button
+            if (event.type == Event::MouseButtonPressed && event.mouseButton.button == Mouse::Left) {
+                Vector2f mousePos(static_cast<float>(event.mouseButton.x), static_cast<float>(event.mouseButton.y));
+                FloatRect pauseButtonBounds = pauseButtonSprite.getGlobalBounds();
+                
+                if (pauseButtonBounds.contains(mousePos)) {
+                    bool wasUnpaused = isPaused && true; // Đang pause và sẽ unpause
+                    isPaused = !isPaused;
+                    cout << (isPaused ? "Game PAUSED" : "Game RESUMED") << endl;
+                    
+                    // Nếu vừa unpause, kiểm tra ngay phím để responsive
+                    if (wasUnpaused && !isPaused) {
+                        // Đợi một chút để người dùng thả chuột và bấm phím
+                        sf::sleep(sf::milliseconds(10));
+                    }
                 }
-                return;
-            }
-            if (event.type == Event::KeyPressed) {
-                if (event.key.code == Keyboard::W && lastDirection.y == 0) direction = { 0.f, -blockSize };
-                else if (event.key.code == Keyboard::S && lastDirection.y == 0) direction = { 0.f, blockSize };
-                else if (event.key.code == Keyboard::A && lastDirection.x == 0) direction = { -blockSize, 0.f };
-                else if (event.key.code == Keyboard::D && lastDirection.x == 0) direction = { blockSize, 0.f };
             }
         }
 
-        if (timeSinceLastMove >= timePerMove) {
+        // Xử lý ESC bằng Raw Input (bypass Unikey)
+        if (IsRawKeyPressed(VK_ESCAPE)) {
+            rawKeyStates[VK_ESCAPE] = false; // Clear ngay sau khi xử lý
+            // Chỉ xóa save tạm nếu là New Game
+            if (!actuallyResumed && tempSaveName == "__TEMP_SAVE__") {
+                deleteSaveState("__TEMP_SAVE__");
+                cout << "Temp save deleted on ESC\n";
+            }
+            // Resume: giữ nguyên save, không xóa
+            UnregisterRawInput(hwnd);
+            return;
+        }
+
+        // Lambda để kiểm tra và cập nhật hướng (có thể gọi nhiều lần)
+        auto checkAndUpdateDirection = [&]() {
+            bool directionChanged = false;
+            Vector2f newDirection = direction;
+            
+            // Ưu tiên phím được bấm sau cùng
+            if (IsRawKeyPressed('W') && lastDirection.y == 0) {
+                newDirection = { 0.f, -blockSize };
+                directionChanged = true;
+            }
+            if (IsRawKeyPressed('S') && lastDirection.y == 0) {
+                newDirection = { 0.f, blockSize };
+                directionChanged = true;
+            }
+            if (IsRawKeyPressed('A') && lastDirection.x == 0) {
+                newDirection = { -blockSize, 0.f };
+                directionChanged = true;
+            }
+            if (IsRawKeyPressed('D') && lastDirection.x == 0) {
+                newDirection = { blockSize, 0.f };
+                directionChanged = true;
+            }
+            
+            // Cập nhật direction ngay lập tức để responsive
+            if (directionChanged) {
+                direction = newDirection;
+                
+                // Nếu có thay đổi hướng và game đang pause thì bỏ pause
+                if (isPaused) {
+                    isPaused = false;
+                    cout << "Game STARTED!\n";
+                }
+            }
+            return directionChanged;
+        };
+        
+        // Kiểm tra phím lần 1 (bình thường)
+        checkAndUpdateDirection();
+
+        if (timeSinceLastMove >= timePerMove && !isPaused) {
             timeSinceLastMove = Time::Zero;
             lastDirection = direction;
             Vector2f newHeadPos = snake[0].getPosition() + direction;
@@ -1335,11 +1756,27 @@ void startGame(RenderWindow& window, bool resumeMode = false, const string& play
                 if (newHeadPos == snake[i].getPosition()) gameOver = true;
 
             if (gameOver) {
-                // Nếu là chế độ NEW GAME (không phải resume), yêu cầu nhập tên
-                if (!resumeMode) {
-                    string name = showInputDialog(window, "Game Over! Enter your name to save:");
+                // Hủy Raw Input trước khi hiện dialog
+                UnregisterRawInput(hwnd);
+                
+                // Nếu THỰC SỰ resume (load thành công) thì tự động lưu luôn
+                if (actuallyResumed && !playerName.empty()) {
+                    // Resume: tự động lưu với tên đã có
+                    saveGameState(playerName, snake, direction, appleSprite.getPosition(), blockSize, score);
+                    cout << "Game saved automatically for: " << playerName << endl;
+                } else {
+                    // New Game: hỏi nhập tên
+                    string name = showInputDialog(window, "Game Over! Enter your name to save (ESC to skip):");
                     if (!name.empty()) {
-                        saveGameState(name, snake, direction, appleSprite.getPosition(), blockSize);
+                        // Xóa save tạm nếu có
+                        if (tempSaveName == "__TEMP_SAVE__") {
+                            deleteSaveState("__TEMP_SAVE__");
+                        }
+                        // Lưu với tên mới
+                        saveGameState(name, snake, direction, appleSprite.getPosition(), blockSize, score);
+                    } else {
+                        // Skip nhập tên -> xóa save tạm
+                        deleteSaveState(tempSaveName);
                     }
                 }
                 // Quay về menu
@@ -1348,14 +1785,18 @@ void startGame(RenderWindow& window, bool resumeMode = false, const string& play
 
             RectangleShape newHead;
             newHead.setSize({ blockSize, blockSize });
-            newHead.setFillColor(Color::Green);
+            newHead.setFillColor(getSnakeBodyColorMain());
             newHead.setOutlineColor(Color::Black);
             newHead.setOutlineThickness(1.f);
             newHead.setPosition(newHeadPos);
             snake.insert(snake.begin(), newHead);
 
-            if (newHeadPos == appleSprite.getPosition())
+            if (newHeadPos == appleSprite.getPosition()) {
+                score += 10;
                 spawnApple(appleSprite, snake, frameWidth, frameHeight, posX_frame, posY_frame, blockSize);
+                // Tăng idIndex khi ăn táo, lặp lại nếu hết chuỗi
+                idIndex = (idIndex + 1) % snakeID.length();
+            }
             else
                 snake.pop_back();
         }
@@ -1364,11 +1805,98 @@ void startGame(RenderWindow& window, bool resumeMode = false, const string& play
         window.draw(spriteContext);
         window.draw(frameSprite);
         window.draw(appleSprite);
-        for (int i = (int)snake.size() - 1; i >= 0; --i) window.draw(snake[i]);
+        
+        // Vẽ rắn với số ID trên mỗi đốt
+        for (int i = (int)snake.size() - 1; i >= 0; --i) {
+            window.draw(snake[i]);
+            
+            // Debug: in ra console
+            static bool firstRun = true;
+            if (firstRun && i == 0) {
+                cout << "Snake size: " << snake.size() << endl;
+                cout << "Font loaded: " << (fontLoaded ? "YES" : "NO") << endl;
+                cout << "snakeID length: " << snakeID.length() << endl;
+                firstRun = false;
+            }
+            
+            // Vẽ số ID trên đốt rắn (chỉ khi font đã load)
+            if (fontLoaded && i < (int)snakeID.length()) {
+                Text idText;
+                idText.setFont(font);
+                idText.setString(string(1, snakeID[i]));
+                idText.setCharacterSize(20); // Tăng size lên
+                idText.setFillColor(Color::Yellow); // Đổi màu vàng dễ thấy
+                idText.setStyle(Text::Bold);
+                
+                // Outline cho text dễ nhìn hơn
+                idText.setOutlineThickness(2.f);
+                idText.setOutlineColor(Color::Black);
+                
+                // Center text trong block
+                FloatRect textBounds = idText.getLocalBounds();
+                idText.setOrigin(textBounds.left + textBounds.width / 2.f, 
+                                 textBounds.top + textBounds.height / 2.f);
+                Vector2f blockCenter = snake[i].getPosition() + Vector2f(blockSize / 2.f, blockSize / 2.f);
+                idText.setPosition(blockCenter);
+                
+                window.draw(idText);
+            }
+        }
+        
+        // Vẽ pause button ở góc phải trên (luôn hiển thị)
+        window.draw(pauseButtonSprite);
+        
+        // Vẽ Score icon và score text
+        window.draw(scoreIconSprite);
+        if (fontLoaded) {
+            Text scoreText;
+            scoreText.setFont(font);
+            scoreText.setString(to_string(score));
+            scoreText.setCharacterSize(45);
+            scoreText.setFillColor(Color::White);
+            scoreText.setStyle(Text::Bold);
+            scoreText.setOutlineThickness(1.5f);
+            scoreText.setOutlineColor(Color::Black);
+            // Đặt số vào giữa ảnh score (căn giữa cả ngang và dọc)
+            FloatRect textBounds = scoreText.getLocalBounds();
+            scoreText.setOrigin(textBounds.left + textBounds.width / 2.f, 
+                               textBounds.top + textBounds.height / 2.f);
+            scoreText.setPosition(170.f, 70.f); // Dịch sang phải thêm
+            window.draw(scoreText);
+        }
+        
+        // Hiển thị text khi game đang pause (không vẽ icon nữa vì đã có button)
+        if (isPaused && fontLoaded) {
+            Text pausedText;
+            pausedText.setFont(font);
+            pausedText.setString("Press WASD to start");
+            pausedText.setCharacterSize(35);
+            pausedText.setFillColor(Color::Yellow);
+            pausedText.setStyle(Text::Bold);
+            pausedText.setOutlineThickness(3.f);
+            pausedText.setOutlineColor(Color::Black);
+            
+            FloatRect textBounds = pausedText.getLocalBounds();
+            pausedText.setOrigin(textBounds.left + textBounds.width / 2.f, 
+                                 textBounds.top + textBounds.height / 2.f);
+            pausedText.setPosition(window.getSize().x / 2.f, window.getSize().y / 2.f);
+            
+            window.draw(pausedText);
+        }
+        
         window.display();
     }
 }
 void showMenu(RenderWindow& window) {
+    // Preload game resources 1 lần
+    static GameResources gameResources;
+    if (!gameResources.loaded) {
+        if (!gameResources.loadAll()) {
+            cout << "Failed to load game resources!\n";
+            return;
+        }
+    }
+    
     Texture bg, newGameTex, resumeTex, tutorialTex, settingsTex, rankTex, quitTex;
 
     // Đảm bảo tất cả các tệp này tồn tại trong thư mục "images/"
@@ -1542,7 +2070,7 @@ void showMenu(RenderWindow& window) {
                 }
                 else if (isInButtonCore(rank, mousePos)) {
                     cout << "Da click vao nut RANK\n";
-                    ShowHighScores();                   
+                    ShowHighScores(window);                   
                 }
                 else if (isInButtonCore(settings, mousePos)) {
                     cout << "Da click vao nut SETTINGS\n";
@@ -1550,31 +2078,85 @@ void showMenu(RenderWindow& window) {
                 }
                 else if (isInButtonCore(tutorial, mousePos)) {
                     cout << "Da click vao nut TUTORIAL\n";
-                    ShowTutorial();
-                    // Thêm chức năng tutorial ở đây
+                    ShowTutorial(window);
                 }
                 else if (isInButtonCore(resume, mousePos)) {
                     cout << "Da click vao nut RESUME\n";
-                    // Yêu cầu nhập tên để load game
-                    string name = showInputDialog(window, "Enter your name to resume:");
-                    if (!name.empty()) {
-                        // Kiểm tra xem file save có tồn tại không
-                        string filename = "save_" + name + ".txt";
-                        ifstream checkFile(filename);
-                        if (checkFile.good()) {
-                            checkFile.close();
-                            startGame(window, true, name);  // Resume mode với tên người chơi
+                    
+                    // Kiểm tra xem có save tạm không (từ New Game đang chơi dở)
+                    const string SAVE_FILE = "savegames.txt";
+                    ifstream checkFile(SAVE_FILE);
+                    bool hasTempSave = false;
+                    if (checkFile.is_open()) {
+                        string line;
+                        while (getline(checkFile, line)) {
+                            if (line == "PLAYER:__TEMP_SAVE__") {
+                                hasTempSave = true;
+                                break;
+                            }
                         }
-                        else {
-                            showMessage(window, "Account not found!\nNo save file for: " + name);
+                        checkFile.close();
+                    }
+                    
+                    // Nếu có save tạm, hỏi user muốn tiếp tục không
+                    if (hasTempSave) {
+                        string choice = showInputDialog(window, "Continue last game? (Y/N) or enter name for saved game:");
+                        if (choice == "Y" || choice == "y" || choice == "yes" || choice == "YES") {
+                            // Tiếp tục game tạm
+                            startGame(window, gameResources, true, "__TEMP_SAVE__");
+                        }
+                        else if (!choice.empty()) {
+                            // Tìm save với tên khác
+                            ifstream checkFile2(SAVE_FILE);
+                            bool foundPlayer = false;
+                            if (checkFile2.is_open()) {
+                                string line;
+                                while (getline(checkFile2, line)) {
+                                    if (line == "PLAYER:" + choice) {
+                                        foundPlayer = true;
+                                        break;
+                                    }
+                                }
+                                checkFile2.close();
+                            }
+                            
+                            if (foundPlayer) {
+                                startGame(window, gameResources, true, choice);
+                            }
+                            else {
+                                showMessage(window, "Save game not found for: " + choice);
+                            }
+                        }
+                    }
+                    else {
+                        // Không có save tạm, nhập tên bình thường
+                        string name = showInputDialog(window, "Enter your name to resume:");
+                        if (!name.empty()) {
+                            ifstream checkFile2(SAVE_FILE);
+                            bool foundPlayer = false;
+                            if (checkFile2.is_open()) {
+                                string line;
+                                while (getline(checkFile2, line)) {
+                                    if (line == "PLAYER:" + name) {
+                                        foundPlayer = true;
+                                        break;
+                                    }
+                                }
+                                checkFile2.close();
+                            }
+                            
+                            if (foundPlayer) {
+                                startGame(window, gameResources, true, name);
+                            }
+                            else {
+                                showMessage(window, "Save game not found for: " + name);
+                            }
                         }
                     }
                 }
                 else if (isInButtonCore(newGame, mousePos)) {
                     cout << "Da click vao nut NEW GAME\n";
-                    newGameStart();
-                    // Chơi luôn không cần nhập tên
-                    startGame(window, false, "");  // New game không có tên
+                    startGame(window, gameResources, false, "");
                 }
                 else {
                     cout << "Click ngoai vung nut\n";
@@ -1590,9 +2172,19 @@ void showMenu(RenderWindow& window) {
 }
 
 int main() {
+    // Khởi tạo threads
+    thread soundThread(SoundWorker);
+    thread autoSaveThread(AutoSaveWorker);
+    
     RenderWindow window(VideoMode(1550, 1050), "Snake Game Menu");
     window.setFramerateLimit(60);
     srand(static_cast<unsigned>(time(0)));
     showMenu(window);
+    
+    // Dừng threads trước khi thoát
+    shouldExit = true;
+    if (soundThread.joinable()) soundThread.join();
+    if (autoSaveThread.joinable()) autoSaveThread.join();
+    
     return 0;
 }

@@ -86,7 +86,26 @@ void SaveHighScoreEntry(const std::string& playerName, int score, int level) {
     strftime(timeStr, sizeof(timeStr), "%d/%m/%Y", &timeinfo);
 
     std::vector<HighScoreEntry> scores = LoadHighScores();
-    scores.push_back(HighScoreEntry(playerName, score, level, timeStr));
+    
+    // Tìm xem đã có tên này chưa
+    bool found = false;
+    for (auto& s : scores) {
+        if (s.playerName == playerName) {
+            // Update nếu điểm mới cao hơn
+            if (score > s.score) {
+                s.score = score;
+                s.level = level;
+                s.date = timeStr;
+            }
+            found = true;
+            break;
+        }
+    }
+    
+    // Nếu chưa có thì thêm mới
+    if (!found) {
+        scores.push_back(HighScoreEntry(playerName, score, level, timeStr));
+    }
 
     std::sort(scores.begin(), scores.end(),
         [](const HighScoreEntry& a, const HighScoreEntry& b) {
@@ -161,9 +180,11 @@ void RebuildScoreColumns(const std::vector<HighScoreEntry>& scores,
     float topPadding = boardHeight * 0.27f;
     float bottomPadding = boardHeight * 0.05f;
     float innerHeight = boardHeight - topPadding - bottomPadding;
-    float spacing = innerHeight / static_cast<float>(count);
+    // Luôn dùng spacing cho 10 người để layout cố định
+    float spacing = innerHeight / 10.0f;
 
-    unsigned int charSize = static_cast<unsigned int>(innerHeight / (count + 1) * 0.8f);
+    // Font size cũng cố định dựa trên 10 người
+    unsigned int charSize = static_cast<unsigned int>(innerHeight / 11.0f * 0.8f);
     if (charSize < 18u) charSize = 18u;
     if (charSize > 36u) charSize = 36u;
 
@@ -246,11 +267,8 @@ void WriteSampleScores() {
 // ============================================================================
 // 6. Hiển thị
 // ============================================================================
-void ShowHighScores() {
+void ShowHighScores(sf::RenderWindow& window) {
     std::vector<HighScoreEntry> scores = LoadHighScores();
-
-    sf::RenderWindow window(sf::VideoMode(1550, 1050), "Top 10 High Scores", sf::Style::Titlebar | sf::Style::Close);
-    window.setFramerateLimit(60);
 
     sf::Font font;
     // --- SỬA LỖI SFML 2.6: Dùng loadFromFile thay vì openFromFile ---
@@ -304,7 +322,7 @@ void ShowHighScores() {
             float bannerW = texW * scale;
             float bannerX = boardLeft + (boardWidth - bannerW) / 2.f;
             float bannerY = boardTop + headerHeight * 0.02f;
-            rankingTitleSprite.setPosition(bannerX, bannerY - 500.0f);
+            rankingTitleSprite.setPosition(bannerX, bannerY - 450.f);
         }
 
         // Panel
@@ -357,15 +375,16 @@ void ShowHighScores() {
 
     updateLayout();
 
-    while (window.isOpen()) {
+    bool exitRank = false;
+    while (window.isOpen() && !exitRank) {
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) window.close();
-            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) window.close();
+            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) exitRank = true;
 
             if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
                 if (backSprite.getGlobalBounds().contains((float)event.mouseButton.x, (float)event.mouseButton.y)) {
-                    window.close();
+                    exitRank = true;
                 }
             }
             if (event.type == sf::Event::Resized) {
@@ -380,9 +399,12 @@ void ShowHighScores() {
         if (listPanelTex.getSize().x > 0) window.draw(listPanelSprite);
         if (rankingTitleTex.getSize().x > 0) window.draw(rankingTitleSprite);
 
-        if (goldTex.getSize().x > 0) window.draw(goldCup);
-        if (silverTex.getSize().x > 0) window.draw(silverCup);
-        if (bronzeTex.getSize().x > 0) window.draw(bronzeCup);
+        // Chỉ vẽ cup khi có dữ liệu
+        if (!rowCentersY.empty()) {
+            if (goldTex.getSize().x > 0 && rowCentersY.size() >= 1) window.draw(goldCup);
+            if (silverTex.getSize().x > 0 && rowCentersY.size() >= 2) window.draw(silverCup);
+            if (bronzeTex.getSize().x > 0 && rowCentersY.size() >= 3) window.draw(bronzeCup);
+        }
 
         for (const auto& t : nameTexts) window.draw(t);
         for (const auto& t : scoreTexts) window.draw(t);

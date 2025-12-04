@@ -4,6 +4,7 @@
 #define TUTORIAL_H
 
 #include <string>
+#include <SFML/Graphics.hpp>
 
 static const std::string TUTORIAL_GUIDE_PATH = "images/TutorialGuide.png";
 
@@ -13,6 +14,6 @@ const float ORIGINAL_BUTTON_Y = 682.0f;
 const float ORIGINAL_BUTTON_WIDTH = 82.0f;
 const float ORIGINAL_BUTTON_HEIGHT = 33.0f;
 
-void ShowTutorial();
+void ShowTutorial(sf::RenderWindow& window);
 
 #endif // TUTORIAL_H

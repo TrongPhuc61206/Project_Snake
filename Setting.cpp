@@ -9,6 +9,8 @@ using namespace std;
 bool setting_musicOn = true;
 int setting_difficulty = 1;
 int setting_snakeColor = 0;
+sf::Music bgm;
+
 
 void showSettings(RenderWindow& window) {
     // ===== FONT =====
@@ -19,7 +21,7 @@ void showSettings(RenderWindow& window) {
 
     // ===== BACKGROUND =====
     Texture bgTex;
-    if (!bgTex.loadFromFile("images/Setting.jpg")) {
+    if (!bgTex.loadFromFile("images/Setting.png")) {
         cout << "Error loading Setting.jpg\n";
     }
     Sprite bg(bgTex);
@@ -34,13 +36,15 @@ void showSettings(RenderWindow& window) {
     Texture texMusicOn, texMusicOff;
     Texture texEasy, texNormal, texHard;
     Texture texColor[4];
+    Texture texBack;
 
-    // Load textures (có thể thêm check lỗi nếu cần)
+    // Load textures 
     texMusicOn.loadFromFile("images/ON.png");
     texMusicOff.loadFromFile("images/OFF.png");
     texEasy.loadFromFile("images/EASY.png");
     texNormal.loadFromFile("images/NORMAL.png");
     texHard.loadFromFile("images/HARD.png");
+    texBack.loadFromFile("images/BACKSETTING.png");
 
     string colorNames[4] = { "Green", "Purple", "Red", "Yellow" };
 
@@ -54,6 +58,7 @@ void showSettings(RenderWindow& window) {
     Sprite btnMusicOn(texMusicOn), btnMusicOff(texMusicOff);
     Sprite btnEasy(texEasy), btnNormal(texNormal), btnHard(texHard);
     Sprite btnColor[4];
+    Sprite btnBack(texBack);
 
     for (int i = 0; i < 4; i++)
         btnColor[i].setTexture(texColor[i]);
@@ -66,11 +71,12 @@ void showSettings(RenderWindow& window) {
         }
         };
 
-    scaleBtn(btnMusicOn, 100);
-    scaleBtn(btnMusicOff, 100);
+    scaleBtn(btnMusicOn, 105);
+    scaleBtn(btnMusicOff, 250);
     scaleBtn(btnEasy, 150);
     scaleBtn(btnNormal, 150);
-    scaleBtn(btnHard, 150);
+    scaleBtn(btnHard, 170);
+    scaleBtn(btnBack, 300);
 
     for (int i = 0; i < 4; i++)
         scaleBtn(btnColor[i], 90);
@@ -79,18 +85,21 @@ void showSettings(RenderWindow& window) {
     float cx = window.getSize().x / 2.f;
 
     // MUSIC
-    btnMusicOn.setPosition(cx - 180, 230);
-    btnMusicOff.setPosition(cx + 60, 230);
+    btnMusicOn.setPosition(cx - 215, 350);
+    btnMusicOff.setPosition(cx + 65, 280);
 
     // DIFFICULTY
-    btnEasy.setPosition(cx - 260, 400);
-    btnNormal.setPosition(cx - 50, 400);
-    btnHard.setPosition(cx + 160, 400);
+    btnEasy.setPosition(cx - 260, 525);
+    btnNormal.setPosition(cx - 50, 525);
+    btnHard.setPosition(cx + 160, 515);
+
+    //BACK
+    btnBack.setPosition(0, 0);
 
     // COLOR ROW
     float startX = cx - 200;
     for (int i = 0; i < 4; i++)
-        btnColor[i].setPosition(startX + i * 140, 600);
+        btnColor[i].setPosition((startX + i * 140) -50, 750);
 
     // ===== HOVER EFFECTS =====
     auto applyHover = [](Sprite& s, bool active) {
@@ -129,6 +138,8 @@ void showSettings(RenderWindow& window) {
         bool hoverEasy = btnEasy.getGlobalBounds().contains(mp);
         bool hoverNormal = btnNormal.getGlobalBounds().contains(mp);
         bool hoverHard = btnHard.getGlobalBounds().contains(mp);
+        bool hoverBack = btnBack.getGlobalBounds().contains(mp);
+
 
         bool hoverColor[4] = { false };
         for (int i = 0; i < 4; i++)
@@ -140,6 +151,7 @@ void showSettings(RenderWindow& window) {
         applyHover(btnEasy, hoverEasy);
         applyHover(btnNormal, hoverNormal);
         applyHover(btnHard, hoverHard);
+        applyHover(btnBack, hoverBack);
 
         for (int i = 0; i < 4; i++)
             applyHover(btnColor[i], hoverColor[i]);
@@ -148,33 +160,36 @@ void showSettings(RenderWindow& window) {
         if (mousePressed) {
             // --- MUSIC ---
             if (hoverMusicOn) {
-                setting_musicOn = true;
-                cout << "Music turned ON" << endl;
-            }
+            setting_musicOn = true;
+            bgm.play();
+        }
             if (hoverMusicOff) {
-                setting_musicOn = false;
-                cout << "Music turned OFF" << endl;
-            }
+            setting_musicOn = false;
+            bgm.stop();
+        }
 
             // --- DIFFICULTY ---
             if (hoverEasy) {
                 setting_difficulty = 0;
-                cout << "Difficulty set to EASY" << endl;
             }
             if (hoverNormal) {
                 setting_difficulty = 1;
-                cout << "Difficulty set to NORMAL" << endl;
             }
             if (hoverHard) {
                 setting_difficulty = 2;
-                cout << "Difficulty set to HARD" << endl;
             }
+
+            // --- BACK ---
+            if (hoverBack) {
+                return; 
+}
 
             // --- COLORS ---
             for (int i = 0; i < 4; i++) {
                 if (hoverColor[i]) {
                     setting_snakeColor = i;
-                    cout << "Snake Color changed to: " << colorNames[i] << endl;
+                    string colorNames[4] = { "Green", "Purple", "Red", "Yellow" };
+                    cout << "Snake color changed to: " << colorNames[i] << endl;
                 }
             }
         }
@@ -198,6 +213,7 @@ void showSettings(RenderWindow& window) {
         window.draw(btnEasy);
         window.draw(btnNormal);
         window.draw(btnHard);
+        window.draw(btnBack);
 
         for (int i = 0; i < 4; i++)
             window.draw(btnColor[i]);

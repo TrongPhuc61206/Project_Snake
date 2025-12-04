@@ -26,5 +26,5 @@ std::vector<HighScoreEntry> LoadHighScores();
 void SaveHighScoreEntry(const std::string& playerName, int score, int level);
 
 // Hiển thị bảng top 10 điểm bằng SFML
-void ShowHighScores();
+void ShowHighScores(sf::RenderWindow& window);
 #endif 
